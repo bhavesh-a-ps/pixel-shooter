@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Pixel Shooter Flow</title>
+  
+  <!-- PWA Meta Tags -->
+  <meta name="theme-color" content="#0f172a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/3203/3203920.png">
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Font Awesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+  <!-- React and ReactDOM (UMD Versions) -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- Babel Standalone -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <style>
+    .scrollbar-hide::-webkit-scrollbar { display: none; }
+    .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+    
+    body { 
+      font-family: 'Inter', sans-serif; 
+      /* Handle mobile "notch" areas */
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+      padding-left: env(safe-area-inset-left);
+      padding-right: env(safe-area-inset-right);
+      touch-action: manipulation; /* Prevents double-tap zoom on buttons */
+    }
+
+    /* Prevent text selection and long-press menus in app mode */
+    * {
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+  </style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@^19.2.3",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
+    "vite": "https://esm.sh/vite@^7.3.1",
+    "path": "https://esm.sh/path@^0.12.7",
+    "url": "https://esm.sh/url@^0.11.4"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body class="bg-slate-950 text-white overflow-hidden m-0 p-0">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useRef, useMemo } = React;
+
+    // --- CONSTANTS ---
+    const COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#eab308', '#a855f7', '#f97316', '#ec4899'];
+    const MAX_RACK_SIZE = 5;
+    const MAX_PATH_SHOOTERS = 5;
+    const SHOOT_INTERVAL = 10;
+    const MOVE_SPEED = 0.0025;
+    const PROJECTILE_SPEED = 24;
+    const PADDING = 60;
+    const LANES_COUNT = 3;
+    const PATH_PIXEL_DISTANCE = 48;
+    // Reduced from 120 to 8 for sharp corners
+    const PATH_CORNER_RADIUS_PX = 8;
+    
+    const GameStatus = { PLAYING: 0, WON: 2, LOST: 3 };
+
+    const UIOverlay = ({ level, status, onNextLevel, onRestart }) => {
+      if (status === GameStatus.PLAYING) return null;
+      const isWon = status === GameStatus.WON;
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 backdrop-blur-xl">
+          <div className="max-w-md w-9/12 p-8 rounded-3xl border border-slate-800 bg-slate-900 shadow-2xl text-center flex flex-col items-center">
+            {isWon ? (
+              <>
+                <div className="w-16 h-16 rounded-full bg-emerald-500/20 flex items-center justify-center mb-6">
+                  <i className="fa-solid fa-check text-3xl text-emerald-400"></i>
+                </div>
+                <h1 className="text-2xl font-black italic tracking-tighter text-white mb-2 uppercase">Target Cleared</h1>
+                <p className="text-slate-400 text-xs mb-8 leading-relaxed">Sector {level} secured. Moving to next coordinate.</p>
+                <button onClick={onNextLevel} className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-xl transition-all uppercase tracking-widest text-xs">Continue</button>
+              </>
+            ) : (
+              <>
+                <div className="w-16 h-16 rounded-full bg-rose-500/20 flex items-center justify-center mb-6">
+                  <i className="fa-solid fa-triangle-exclamation text-3xl text-rose-400"></i>
+                </div>
+                <h1 className="text-2xl font-black italic tracking-tighter text-white mb-2 uppercase">Rack Full</h1>
+                <p className="text-slate-400 text-xs mb-8 leading-relaxed">Exceeded reserve capacity. Reboot required.</p>
+                <button onClick={onRestart} className="w-full py-4 bg-rose-500 hover:bg-rose-400 text-white font-black rounded-xl transition-all uppercase tracking-widest text-xs">Restart</button>
+              </>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    const GameBoard = ({ levelConfig, status, onGameOver, onWin }) => {
+      const canvasRef = useRef(null);
+      const containerRef = useRef(null);
+      const [grid, setGrid] = useState([]);
+      const targetedPixelsRef = useRef(new Set());
+      
+      const [shooters, setShooters] = useState([]);
+      const [rack, setRack] = useState([]);
+      const [projectiles, setProjectiles] = useState([]);
+      const [deployment, setDeployment] = useState({ lanes: Array(LANES_COUNT).fill([]).map(() => []) });
+      
+      const lastShootTimeRef = useRef(0);
+      const requestRef = useRef();
+      const [metrics, setMetrics] = useState({ totalPixels: 0, remainingPixels: 0, totalAmmo: 0 });
+
+      const totalSoldiersLeft = useMemo(() => {
+        return shooters.length + rack.length + deployment.lanes.flat().length;
+      }, [shooters.length, rack.length, deployment.lanes]);
+
+      const getPathPosition = useCallback((progress, size, cellSize) => {
+        const p = ((progress % 1) + 1) % 1; 
+        const d = PATH_PIXEL_DISTANCE / cellSize;
+        let r = PATH_CORNER_RADIUS_PX / cellSize;
+        const width = size + 2 * d;
+        const height = size + 2 * d;
+        r = Math.min(r, width / 2, height / 2);
+        const sW = width - 2 * r;
+        const sH = height - 2 * r;
+        const arc = (Math.PI * r) / 2;
+        const totalLen = 2 * sW + 2 * sH + 4 * arc;
+        const currentLen = p * totalLen;
+
+        if (currentLen < sW) return { x: -d + r + currentLen, y: size + d, side: 0 };
+        else if (currentLen < sW + arc) {
+          const ang = (currentLen - sW) / arc * (Math.PI / 2);
+          return { x: size + d - r + Math.sin(ang) * r, y: size + d - r + Math.cos(ang) * r, side: 4 }; 
+        } else if (currentLen < sW + arc + sH) return { x: size + d, y: size + d - r - (currentLen - (sW + arc)), side: 3 };
+        else if (currentLen < sW + arc + sH + arc) {
+          const ang = (currentLen - (sW + arc + sH)) / arc * (Math.PI / 2);
+          return { x: size + d - r + Math.cos(ang) * r, y: -d + r - Math.sin(ang) * r, side: 5 }; 
+        } else if (currentLen < 2 * sW + 2 * arc + sH) return { x: size + d - r - (currentLen - (sW + 2 * arc + sH)), y: -d, side: 2 };
+        else if (currentLen < 2 * sW + 3 * arc + sH) {
+          const ang = (currentLen - (2 * sW + 2 * arc + sH)) / arc * (Math.PI / 2);
+          return { x: -d + r - Math.sin(ang) * r, y: -d + r - Math.cos(ang) * r, side: 6 }; 
+        } else if (currentLen < 2 * sW + 3 * arc + 2 * sH) return { x: -d, y: -d + r + (currentLen - (2 * sW + 3 * arc + sH)), side: 1 };
+        else {
+          const ang = (currentLen - (2 * sW + 3 * arc + 2 * sH)) / arc * (Math.PI / 2);
+          return { x: -d + r - Math.cos(ang) * r, y: size + d - r + Math.sin(ang) * r, side: 7 }; 
+        }
+      }, []);
+
+      const hasClearSight = useCallback((sx, sy, tx, ty, currentGrid, size, targetX, targetY) => {
+        const dx = tx - sx; const dy = ty - sy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const steps = Math.ceil(dist * 6); 
+        for (let i = 1; i < steps; i++) {
+          const t = i / steps; const px = sx + dx * t; const py = sy + dy * t;
+          const gx = Math.floor(px); const gy = Math.floor(py);
+          if (gx >= 0 && gx < size && gy >= 0 && gy < size) {
+            if (gx === targetX && gy === targetY) return true;
+            if (currentGrid[gy][gx] !== 'transparent') return false;
+          }
+        }
+        return true;
+      }, []);
+
+      const getTarget = useCallback((shooter, currentGrid, size, targeted, cellSize) => {
+        const { x: sx, y: sy } = getPathPosition(shooter.progress, size, cellSize);
+        
+        // Direction vector from shooter to the center of the grid for more natural inward shooting
+        const cx = size / 2;
+        const cy = size / 2;
+        const vToCenterX = cx - sx;
+        const vToCenterY = cy - sy;
+        const distToCenter = Math.sqrt(vToCenterX * vToCenterX + vToCenterY * vToCenterY);
+        const nx = vToCenterX / distToCenter;
+        const ny = vToCenterY / distToCenter;
+
+        // Reduced shooting angle to 2 degrees to ensure pixels are directly in front
+        const cosThreshold = Math.cos(2 * Math.PI / 180); 
+        const possibleTargets = [];
+        
+        for (let gy = 0; gy < size; gy++) {
+          for (let gx = 0; gx < size; gx++) {
+            if (currentGrid[gy][gx] === shooter.color && !targeted.has(`${gx},${gy}`)) {
+              const tx = gx + 0.5; const ty = gy + 0.5;
+              const vx = tx - sx; const vy = ty - sy;
+              const dist = Math.sqrt(vx*vx + vy*vy);
+              const ux = vx / dist; const uy = vy / dist;
+              
+              const dot = ux * nx + uy * ny;
+              if (dot >= cosThreshold) {
+                if (hasClearSight(sx, sy, tx, ty, currentGrid, size, gx, gy)) {
+                  possibleTargets.push({ gx, gy, distSq: vx*vx + vy*vy });
+                }
+              }
+            }
+          }
+        }
+
+        if (possibleTargets.length === 0) return null;
+        possibleTargets.sort((a, b) => a.distSq - b.distSq);
+        return { gridX: possibleTargets[0].gx, gridY: possibleTargets[0].gy };
+      }, [getPathPosition, hasClearSight]);
+
+      useEffect(() => {
+        const counts = {};
+        const newGrid = Array(levelConfig.gridSize).fill(null).map(() => 
+          Array(levelConfig.gridSize).fill(null).map(() => {
+            const rand = Math.random();
+            if (rand < 0.1) return 'transparent'; 
+            const color = levelConfig.colors[Math.floor(Math.random() * levelConfig.colors.length)];
+            counts[color] = (counts[color] || 0) + 1;
+            return color;
+          })
+        );
+        const totalPixels = Object.values(counts).reduce((a, b) => a + b, 0);
+        targetedPixelsRef.current = new Set();
+        let targetSoldierCount = Math.min(100, Math.max(8, Math.floor(totalPixels / 15)));
+        const allShooters = [];
+        Object.keys(counts).forEach(color => {
+          let ammoForColor = counts[color];
+          let soldiers = Math.max(1, Math.round((ammoForColor / totalPixels) * targetSoldierCount));
+          let baseAmmo = Math.floor(ammoForColor / soldiers);
+          let remainder = ammoForColor % soldiers;
+          for (let i = 0; i < soldiers; i++) {
+            const ammo = baseAmmo + (remainder > 0 ? 1 : 0);
+            if (remainder > 0) remainder--;
+            allShooters.push({ id: Math.random().toString(36).substr(2, 9), color, ammo });
+          }
+        });
+        allShooters.sort(() => Math.random() - 0.5);
+        const newLanes = Array(LANES_COUNT).fill(null).map(() => []);
+        allShooters.forEach((s, idx) => newLanes[idx % LANES_COUNT].push(s));
+        setGrid(newGrid); setShooters([]); setRack([]); setProjectiles([]); setDeployment({ lanes: newLanes });
+        setMetrics({ totalPixels, remainingPixels: totalPixels, totalAmmo: totalPixels });
+      }, [levelConfig]);
+
+      const update = useCallback((time) => {
+        if (status !== GameStatus.PLAYING) { requestRef.current = requestAnimationFrame(update); return; }
+        const canvas = canvasRef.current; if (!canvas) return;
+        const size = levelConfig.gridSize; const canvasSize = canvas.width;
+        const gridArea = canvasSize - (PADDING * 2); const cellSize = gridArea / size;
+        const offsetX = PADDING; const offsetY = PADDING;
+
+        const currentShootInterval = totalSoldiersLeft <= 5 ? SHOOT_INTERVAL / 2 : SHOOT_INTERVAL;
+        const shouldShoot = time - lastShootTimeRef.current >= currentShootInterval;
+        if (shouldShoot) lastShootTimeRef.current = time;
+        const currentMoveSpeed = totalSoldiersLeft <= 5 ? MOVE_SPEED * 2 : MOVE_SPEED;
+
+        setShooters(prev => {
+          const updated = []; const newRack = []; const newProj = [];
+          for (let s of prev) {
+            s.progress += currentMoveSpeed;
+            if (shouldShoot && s.ammo > 0) {
+              const shot = getTarget(s, grid, size, targetedPixelsRef.current, cellSize);
+              if (shot) {
+                s.ammo--; targetedPixelsRef.current.add(`${shot.gridX},${shot.gridY}`);
+                const { x: sx, y: sy } = getPathPosition(s.progress, size, cellSize);
+                newProj.push({ id: Math.random().toString(36).substr(2,9), x: offsetX + sx * cellSize, y: offsetY + sy * cellSize, targetX: offsetX + shot.gridX * cellSize + cellSize/2, targetY: offsetY + shot.gridY * cellSize + cellSize/2, gridX: shot.gridX, gridY: shot.gridY, color: s.color });
+              }
+            }
+            if (s.progress >= 1) {
+              if (s.ammo > 0) {
+                if (totalSoldiersLeft <= 5) { s.progress %= 1; updated.push(s); }
+                else newRack.push({ ...s, status: 'RACK' });
+              }
+            } else if (s.ammo > 0) updated.push(s);
+          }
+          if (newProj.length > 0) setProjectiles(p => [...p, ...newProj]);
+          if (newRack.length > 0) {
+            setRack(current => {
+              const combined = [...current, ...newRack];
+              if (combined.length > MAX_RACK_SIZE) onGameOver();
+              return combined;
+            });
+          }
+          return updated;
+        });
+
+        setProjectiles(prev => {
+          const active = []; let gridChanged = false; let newGrid = grid.map(r => [...r]);
+          for (let p of prev) {
+            const dx = p.targetX - p.x; const dy = p.targetY - p.y; const dist = Math.sqrt(dx*dx + dy*dy);
+            if (dist < PROJECTILE_SPEED) {
+              if (newGrid[p.gridY][p.gridX] === p.color) { newGrid[p.gridY][p.gridX] = 'transparent'; gridChanged = true; targetedPixelsRef.current.delete(`${p.gridX},${p.gridY}`); }
+            } else {
+              active.push({ ...p, x: p.x + (dx/dist)*PROJECTILE_SPEED, y: p.y + (dy/dist)*PROJECTILE_SPEED });
+            }
+          }
+          if (gridChanged) {
+            setGrid(newGrid);
+            const remaining = newGrid.flat().filter(c => c !== 'transparent').length;
+            setMetrics(m => ({ ...m, remainingPixels: remaining }));
+            if (remaining === 0) onWin();
+          }
+          return active;
+        });
+        requestRef.current = requestAnimationFrame(update);
+      }, [status, grid, levelConfig, totalSoldiersLeft, getTarget, getPathPosition]);
+
+      useEffect(() => { requestRef.current = requestAnimationFrame(update); return () => cancelAnimationFrame(requestRef.current); }, [update]);
+
+      useEffect(() => {
+        const ctx = canvasRef.current?.getContext('2d'); if (!ctx) return;
+        const size = levelConfig.gridSize; const canvasSize = canvasRef.current.width;
+        const gridArea = canvasSize - (PADDING * 2); const cellSize = gridArea / size;
+        const offsetX = PADDING; const offsetY = PADDING;
+        ctx.clearRect(0, 0, canvasSize, canvasSize);
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.4)'; ctx.roundRect(offsetX, offsetY, gridArea, gridArea, 8); ctx.fill();
+        grid.forEach((row, r) => row.forEach((cell, c) => {
+          if (cell !== 'transparent') { ctx.fillStyle = cell; ctx.beginPath(); ctx.roundRect(offsetX + c * cellSize + 0.5, offsetY + r * cellSize + 0.5, cellSize - 1, cellSize - 1, 3); ctx.fill(); }
+        }));
+        shooters.forEach(s => {
+          const { x, y } = getPathPosition(s.progress, size, cellSize);
+          const dx = offsetX + x * cellSize; const dy = offsetY + y * cellSize;
+          ctx.fillStyle = s.color; ctx.beginPath(); ctx.arc(dx, dy, 14, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = 'white'; ctx.lineWidth = 2; ctx.stroke();
+          ctx.fillStyle = 'white'; ctx.font = 'bold 12px Inter'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(s.ammo.toString(), dx, dy);
+        });
+        projectiles.forEach(p => { ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fill(); });
+      }, [grid, shooters, projectiles, levelConfig]);
+
+      useEffect(() => {
+        const resize = () => {
+          const container = containerRef.current; if (!container) return;
+          const rect = container.getBoundingClientRect();
+          const size = Math.min(rect.width, rect.height);
+          canvasRef.current.width = size; canvasRef.current.height = size;
+        };
+        window.addEventListener('resize', resize); resize();
+        return () => window.removeEventListener('resize', resize);
+      }, []);
+
+      return (
+        <div className="flex flex-col items-center w-full h-full">
+          <div ref={containerRef} className="flex-grow w-full flex items-center justify-center relative p-2 overflow-hidden">
+            <div className="absolute top-2 left-4 bg-slate-900/80 px-3 py-1 rounded-lg border border-slate-700/50 backdrop-blur z-20">
+               <div className="flex justify-between gap-4">
+                  <span className="text-slate-400 text-[8px] font-bold uppercase tracking-widest">Bank</span>
+                  <span className="text-white text-[9px] font-black">{metrics.remainingPixels}</span>
+               </div>
+               {totalSoldiersLeft <= 5 && <div className="text-amber-400 text-[7px] font-black uppercase tracking-tighter animate-pulse">OVERDRIVE</div>}
+            </div>
+            <canvas ref={canvasRef} className="rounded-2xl block bg-slate-900/10 shadow-inner aspect-square" />
+            <div className="absolute top-2 right-4 bg-slate-950/60 px-2 py-1 rounded-full border border-slate-800 backdrop-blur-sm z-20">
+               <span className="text-slate-500 text-[8px] font-bold tracking-widest uppercase">{shooters.length}/{MAX_PATH_SHOOTERS}</span>
+            </div>
+          </div>
+          <div className="w-full max-w-xl px-4 py-2 flex flex-col gap-2">
+            <div className="flex flex-col gap-1">
+              <div className="flex justify-between items-center px-1">
+                <span className="text-slate-500 text-[8px] font-bold uppercase tracking-widest">Reserve</span>
+                <span className={`text-[8px] font-bold uppercase ${rack.length >= MAX_RACK_SIZE ? 'text-rose-400' : 'text-slate-600'}`}>{rack.length}/{MAX_RACK_SIZE}</span>
+              </div>
+              <div className="flex gap-2 p-2 rounded-xl bg-slate-900/90 border border-slate-800/80 shadow-lg justify-center h-14">
+                {Array(MAX_RACK_SIZE).fill(null).map((_, i) => (
+                  <div key={i} className="w-10 h-10">
+                    {rack[i] ? (
+                      <button onClick={() => status === GameStatus.PLAYING && shooters.length < MAX_PATH_SHOOTERS && (setRack(prev => prev.filter((_, idx) => idx !== i)), setShooters(prev => [...prev, { ...rack[i], progress: 0, status: 'PATH' }]))} className="w-full h-full rounded-full bg-white/10 flex items-center justify-center border-2 border-white/20" style={{backgroundColor: rack[i].color}}>
+                        <span className="text-white font-black text-sm">{rack[i].ammo}</span>
+                      </button>
+                    ) : <div className="w-full h-full rounded-full border border-slate-800/50 border-dashed" />}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-2 p-2 rounded-xl bg-slate-800/10 border border-slate-700/20 h-32 overflow-hidden">
+               {deployment.lanes.map((lane, lIdx) => (
+                 <div key={lIdx} className="flex flex-col items-center gap-2 p-1 rounded-lg bg-slate-900/30 overflow-y-auto scrollbar-hide">
+                    {lane.length > 0 ? lane.map((s, sIdx) => (
+                      <button key={s.id} onClick={() => sIdx === 0 && status === GameStatus.PLAYING && shooters.length < MAX_PATH_SHOOTERS && (setShooters(p => [...p, {...s, progress: 0}]), setDeployment(prev => ({ lanes: prev.lanes.map((l, id) => id === lIdx ? l.slice(1) : l) })))} className={`relative w-8 aspect-square rounded-full transition-all shrink-0 ${sIdx === 0 ? 'border-2 border-white/40' : 'opacity-40 scale-90'}`} style={{backgroundColor: s.color}}>
+                        <span className="text-white font-black text-[10px]">{s.ammo}</span>
+                      </button>
+                    )) : <div className="text-[8px] text-slate-700 uppercase font-black rotate-90">EMPTY</div>}
+                 </div>
+               ))}
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const App = () => {
+      const [level, setLevel] = useState(1);
+      const [status, setStatus] = useState(GameStatus.PLAYING);
+      const levelConfig = useMemo(() => ({
+        gridSize: Math.min(10 + Math.floor(level * 2), 60),
+        colors: COLORS.slice(0, Math.min(3 + Math.floor(level/3), 6))
+      }), [level]);
+
+      return (
+        <div className="flex flex-col h-screen w-screen bg-slate-950 select-none overflow-hidden items-center justify-between p-2">
+          <header className="w-full flex justify-between px-4 py-2 shrink-0">
+            <div className="flex flex-col">
+              <span className="text-slate-500 text-[10px] uppercase tracking-widest font-bold">Sector</span>
+              <span className="text-lg font-black text-white italic leading-tight">FLOW_{level}</span>
+            </div>
+            <div className="text-right">
+              <span className="text-slate-500 text-[10px] uppercase tracking-widest font-bold">Status</span>
+              <div className="text-xs font-bold text-emerald-400">ENGAGED</div>
+            </div>
+          </header>
+          <div className="flex-grow w-full flex items-center justify-center relative overflow-hidden">
+            <GameBoard levelConfig={levelConfig} status={status} onGameOver={() => setStatus(GameStatus.LOST)} onWin={() => setStatus(GameStatus.WON)} />
+          </div>
+          <UIOverlay level={level} status={status} onNextLevel={() => { setLevel(l => l+1); setStatus(GameStatus.PLAYING); }} onRestart={() => { setLevel(1); setStatus(GameStatus.PLAYING); }} />
+          <footer className="w-full py-1 text-center text-slate-700 text-[7px] uppercase tracking-tighter">Neural Link Active</footer>
+        </div>
+      );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(err => console.log('SW registration failed:', err));
+      });
+    }
+  </script>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>

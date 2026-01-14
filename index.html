@@ -49,7 +49,11 @@
   "imports": {
     "react": "https://esm.sh/react@^19.2.3",
     "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
-    "react/": "https://esm.sh/react@^19.2.3/"
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
+    "vite": "https://esm.sh/vite@^7.3.1",
+    "path": "https://esm.sh/path@^0.12.7",
+    "url": "https://esm.sh/url@^0.11.4"
   }
 }
 </script>
@@ -65,17 +69,16 @@
     const COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#eab308', '#a855f7', '#f97316', '#ec4899'];
     const MAX_RACK_SIZE = 5;
     const MAX_PATH_SHOOTERS = 5;
-    const SHOOT_INTERVAL = 100;
+    const SHOOT_INTERVAL = 10;
     const MOVE_SPEED = 0.0025;
-    const PROJECTILE_SPEED = 12;
+    const PROJECTILE_SPEED = 24;
     const PADDING = 60;
     const LANES_COUNT = 3;
     const PATH_PIXEL_DISTANCE = 48;
-    const PATH_CORNER_RADIUS_PX = 120;
+    // Reduced from 120 to 8 for sharp corners
+    const PATH_CORNER_RADIUS_PX = 8;
     
     const GameStatus = { PLAYING: 0, WON: 2, LOST: 3 };
-
-    // --- UI COMPONENTS ---
 
     const UIOverlay = ({ level, status, onNextLevel, onRestart }) => {
       if (status === GameStatus.PLAYING) return null;
@@ -106,8 +109,6 @@
         </div>
       );
     };
-
-    // --- GAME BOARD ---
 
     const GameBoard = ({ levelConfig, status, onGameOver, onWin }) => {
       const canvasRef = useRef(null);
@@ -163,7 +164,7 @@
       const hasClearSight = useCallback((sx, sy, tx, ty, currentGrid, size, targetX, targetY) => {
         const dx = tx - sx; const dy = ty - sy;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        const steps = Math.ceil(dist * 2); 
+        const steps = Math.ceil(dist * 6); 
         for (let i = 1; i < steps; i++) {
           const t = i / steps; const px = sx + dx * t; const py = sy + dy * t;
           const gx = Math.floor(px); const gy = Math.floor(py);
@@ -176,26 +177,39 @@
       }, []);
 
       const getTarget = useCallback((shooter, currentGrid, size, targeted, cellSize) => {
-        const { x: sx, y: sy, side } = getPathPosition(shooter.progress, size, cellSize);
-        if (side >= 4) return null;
+        const { x: sx, y: sy } = getPathPosition(shooter.progress, size, cellSize);
+        
+        // Direction vector from shooter to the center of the grid for more natural inward shooting
+        const cx = size / 2;
+        const cy = size / 2;
+        const vToCenterX = cx - sx;
+        const vToCenterY = cy - sy;
+        const distToCenter = Math.sqrt(vToCenterX * vToCenterX + vToCenterY * vToCenterY);
+        const nx = vToCenterX / distToCenter;
+        const ny = vToCenterY / distToCenter;
+
+        // Reduced shooting angle to 2 degrees to ensure pixels are directly in front
+        const cosThreshold = Math.cos(2 * Math.PI / 180); 
         const possibleTargets = [];
+        
         for (let gy = 0; gy < size; gy++) {
           for (let gx = 0; gx < size; gx++) {
             if (currentGrid[gy][gx] === shooter.color && !targeted.has(`${gx},${gy}`)) {
               const tx = gx + 0.5; const ty = gy + 0.5;
-              let distL, distF;
-              if (side === 0) { distL = sy - ty; distF = tx - sx; }
-              else if (side === 1) { distL = tx - sx; distF = ty - sy; }
-              else if (side === 2) { distL = ty - sy; distF = sx - tx; }
-              else { distL = sx - tx; distF = sy - ty; }
-              if (distL > 0 && distF >= -0.1 && distF <= distL + 0.1) {
+              const vx = tx - sx; const vy = ty - sy;
+              const dist = Math.sqrt(vx*vx + vy*vy);
+              const ux = vx / dist; const uy = vy / dist;
+              
+              const dot = ux * nx + uy * ny;
+              if (dot >= cosThreshold) {
                 if (hasClearSight(sx, sy, tx, ty, currentGrid, size, gx, gy)) {
-                  possibleTargets.push({ gx, gy, distSq: (tx-sx)**2 + (ty-sy)**2 });
+                  possibleTargets.push({ gx, gy, distSq: vx*vx + vy*vy });
                 }
               }
             }
           }
         }
+
         if (possibleTargets.length === 0) return null;
         possibleTargets.sort((a, b) => a.distSq - b.distSq);
         return { gridX: possibleTargets[0].gx, gridY: possibleTargets[0].gy };
@@ -205,6 +219,8 @@
         const counts = {};
         const newGrid = Array(levelConfig.gridSize).fill(null).map(() => 
           Array(levelConfig.gridSize).fill(null).map(() => {
+            const rand = Math.random();
+            if (rand < 0.1) return 'transparent'; 
             const color = levelConfig.colors[Math.floor(Math.random() * levelConfig.colors.length)];
             counts[color] = (counts[color] || 0) + 1;
             return color;
@@ -377,8 +393,6 @@
       );
     };
 
-    // --- MAIN APP ---
-
     const App = () => {
       const [level, setLevel] = useState(1);
       const [status, setStatus] = useState(GameStatus.PLAYING);
@@ -411,7 +425,6 @@
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<App />);
 
-    // Service Worker Registration for PWA installation
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('./sw.js').catch(err => console.log('SW registration failed:', err));

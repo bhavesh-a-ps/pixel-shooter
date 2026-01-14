@@ -1,0 +1,5 @@
+{
+  "name": "Pixel Shooter Flow",
+  "description": "A strategic pixel-clearing game where shooters orbit a central grid, firing color-matched bullets with clear lines of sight to clear patterns and advance through levels.",
+  "requestFramePermissions": []
+}
